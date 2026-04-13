@@ -18,6 +18,8 @@ AGENTS.md
 
 # Experimental code/artifacts
 dev/
+gemma4-adapter/
+run.log
 
 # Results file
 results.tsv

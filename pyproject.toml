@@ -5,15 +5,22 @@ description = "Autonomous pretraining research swarm"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "accelerate>=1.10.0",
+    "bitsandbytes>=0.48.1",
     "kernels>=0.11.7",
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
+    "peft>=0.18.0",
     "pyarrow>=21.0.0",
+    "protobuf>=6.33.0",
     "requests>=2.32.0",
     "rustbpe>=0.1.0",
+    "scipy>=1.16.2",
+    "sentencepiece>=0.2.1",
     "tiktoken>=0.11.0",
     "torch==2.9.1",
+    "transformers>=4.57.0",
 ]
 
 [tool.uv.sources]

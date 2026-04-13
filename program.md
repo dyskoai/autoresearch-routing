@@ -1,114 +1,155 @@
-# autoresearch
+# autoresearch-routing
 
-This is an experiment to have the LLM do its own research.
+This repo adapts `karpathy/autoresearch` from 5-minute GPT pretraining to autonomous single-GPU routing SFT for `google/gemma-4-E4B-it`.
 
 ## Setup
 
-To set up a new experiment, work with the user to:
+When a human asks you to start a new unattended run, do the following before the first experiment:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with just the header row. The baseline will be recorded after the first run.
-6. **Confirm and go**: Confirm setup looks good.
+1. Pick a fresh run tag based on the date, for example `apr13-gemma4`.
+2. Create a dedicated branch from the current default branch:
+   - `git checkout -b autoresearch-routing/<tag>`
+3. Read the in-scope files for context:
+   - `data/main-tuning.md`
+   - `prepare_routing.py`
+   - `train.py`
+   - `pyproject.toml`
+4. Verify the machine has a usable NVIDIA GPU:
+   - `nvidia-smi`
+   - `uv run python -c "import torch; print(torch.cuda.is_available())"`
+5. Verify dependencies are installed. If imports fail, run `uv sync`.
+6. Verify the cached routing data exists in `~/.cache/routing/`:
+   - If `train.pkl` or `eval.pkl` is missing, run `uv run prepare_routing.py`
+7. Initialize `results.tsv` with the header row if it does not exist yet:
+   - `commit	accuracy	memory_gb	status	description`
+8. Start the baseline run immediately once setup is valid. Do not wait for extra confirmation.
 
-Once you get confirmation, kick off the experimentation.
+## Ground Rules
 
-## Experimentation
+You are running autonomous research on a single GPU. The main objective is to maximize `overall_accuracy` from the fixed evaluator in `train.py`.
 
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
+What you can modify:
+- `train.py`
 
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
+What you must not modify during experiments:
+- `prepare_routing.py`
+- the fixed routing evaluator in `train.py`
+- the dataset files in `data/`
 
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
+The first run must always be the untouched baseline.
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
+## Metric
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+The score to optimize is:
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+`overall_accuracy = (correct_tool_routes + correct_non_tool_responses) / total_eval_examples`
 
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
+Higher is better.
 
-## Output format
+Current cached split after filtering malformed rows:
+- Train: 297 usable examples
+- Eval: 74 usable examples
+- Eval tool queries: 49
+- Eval non-tool queries: 25
 
-Once the script finishes it prints a summary like this:
+Important limitation:
+- The current eval set has no `find_pairing_suggestions` examples after filtering.
+- The train set has only 1 pairing example.
+- Do not claim pairing quality improved unless you also spot-check it manually with direct prompts.
+
+## Output Format
+
+Each run ends with a summary like this:
 
 ```
 ---
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
+overall_accuracy: 0.923100
+tool_accuracy:    0.938800
+notool_accuracy:  0.896600
+peak_vram_mb:     11240.0
+training_seconds: 1820.5
+num_epochs:       3
+num_train:        297
+num_eval:         74
+lora_r:           16
+lora_targets:     q_proj,k_proj,v_proj,o_proj
 ```
 
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
+Extract the key metrics from the log with:
 
 ```
-grep "^val_bpb:" run.log
+grep "^overall_accuracy:\|^peak_vram_mb:" run.log
 ```
 
-## Logging results
+## Logging Results
 
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
-
-The TSV has a header row and 5 columns:
+After every experiment, append one line to `results.tsv` using tab separation:
 
 ```
-commit	val_bpb	memory_gb	status	description
+commit	accuracy	memory_gb	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
+Columns:
+1. short git commit hash
+2. `overall_accuracy` as a float, or `0.000000` on crash
+3. peak memory in GB with one decimal place, or `0.0` on crash
+4. `keep`, `discard`, or `crash`
+5. short description of the experiment
 
 Example:
 
 ```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
+commit	accuracy	memory_gb	status	description
+abc1234	0.662162	14.8	keep	baseline qlora config
+def5678	0.689189	15.1	keep	raise lora rank to 32
+ghi9012	0.675676	15.0	discard	add mlp targets with same lr
+jkl3456	0.000000	0.0	crash	flash attention 2 without dependency
 ```
 
-## The experiment loop
+## What To Tune
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+Prioritize simple, high-signal changes:
+- LoRA rank, alpha, dropout
+- LoRA target modules, including MLP projections
+- learning rate and scheduler
+- batch size and gradient accumulation
+- number of epochs
+- max sequence length
+- gradient checkpointing
+- attention implementation when the dependency is already available
+
+Prefer changes that improve accuracy without materially inflating VRAM or adding brittle code.
+
+## The Experiment Loop
 
 LOOP FOREVER:
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+1. Inspect the current git commit and recent `results.tsv`.
+2. Pick one concrete idea for `train.py`.
+3. Edit `train.py`.
+4. Commit the experiment.
+5. Run:
+   - `uv run train.py > run.log 2>&1`
+6. Read out the result:
+   - `grep "^overall_accuracy:\|^peak_vram_mb:" run.log`
+7. If the grep output is empty, the run crashed:
+   - inspect `tail -n 80 run.log`
+   - fix obvious bugs and retry once if the idea is still valid
+   - otherwise log `crash` and move on
+8. Append the result to `results.tsv`.
+9. If `overall_accuracy` improved, keep the commit and continue from there.
+10. If accuracy is flat or worse, reset the branch back to the previous keep-point and continue with a new idea.
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+## Runtime Expectations
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+This is full SFT, not a 5-minute toy loop.
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+Expected run time:
+- roughly 20 to 60 minutes per experiment on a practical single GPU
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+Timeout rule:
+- if a run exceeds 90 minutes, treat it as failed unless the log shows steady progress and you have a specific reason to wait longer
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+## Autonomy
+
+Once the loop begins, do not pause for human confirmation. Keep running experiments until manually stopped.
